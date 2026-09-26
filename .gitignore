@@ -1,0 +1,10 @@
+# Godot 4 のキャッシュ・インポート結果
+.godot/
+/android/
+
+# Web 書き出しの出力（GCS に置くためリポジトリには含めない）
+/build/
+
+# OS
+.DS_Store
+Thumbs.db
