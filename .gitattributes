@@ -1,0 +1,10 @@
+# 改行コードを LF に揃える（Godot のシーン・スクリプトを OS に関係なく同じ差分にするため）
+* text=auto eol=lf
+
+# バイナリ
+*.png binary
+*.jpg binary
+*.webp binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
