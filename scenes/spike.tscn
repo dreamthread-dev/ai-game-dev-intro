@@ -1,0 +1,15 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/falling_object.gd" id="1_fall"]
+
+[node name="Spike" type="Area2D"]
+script = ExtResource("1_fall")
+kind = 1
+fall_speed = 180.0
+
+[node name="Visual" type="Polygon2D" parent="."]
+color = Color(0.95, 0.25, 0.3, 1)
+polygon = PackedVector2Array(-24, -20, 24, -20, 0, 24)
+
+[node name="CollisionPolygon2D" type="CollisionPolygon2D" parent="."]
+polygon = PackedVector2Array(-16, -14, 16, -14, 0, 16)
