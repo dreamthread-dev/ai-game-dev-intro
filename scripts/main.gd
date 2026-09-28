@@ -13,7 +13,7 @@ const SPIKE_SCENE := preload("res://scenes/spike.tscn")
 @export var fixed_seed := 0
 ## 自動で下へ流れる速さ（px/秒）
 @export var base_scroll_speed := 200.0
-## 1ステージで登る距離（px）。自動スクロールだけなら 6000 / 200 = 30秒
+## 1ステージで登る距離（px）。この距離の先に渡り廊下があり、触れるとクリア
 @export var stage_length := 6000.0
 ## プレイヤーがこの高さより上に来たら、その分だけ余計にスクロールする
 @export var push_line_y := 450.0
@@ -31,6 +31,8 @@ const SPIKE_SCENE := preload("res://scenes/spike.tscn")
 @export_range(0.0, 1.0) var coin_ratio := 0.6
 ## 落下物を出す位置の、壁からの余白
 @export var spawn_margin := 30.0
+## 町並みが下へはける速さ。登った距離に掛ける倍率（0 で動かない、1 で壁と同じ速さ）
+@export_range(0.0, 1.0) var town_parallax := 0.2
 ## ステージクリア後、次のステージが始まるまでの秒数
 @export var clear_pause := 1.0
 ## ゲームオーバー後、リトライを受け付けるまでの秒数（誤タップ防止）
@@ -45,17 +47,23 @@ var climbed := 0.0
 var _wait := 0.0
 
 @onready var walls = $Walls
-@onready var summit: ColorRect = $Summit
+@onready var summit: TextureRect = $Summit
+@onready var town: TextureRect = $Town
+@onready var _town_top := town.position.y
 @onready var drops: Node2D = $Drops
 @onready var player: Player = $Player
 @onready var spawn_timer: Timer = $SpawnTimer
 @onready var hud = $HUD
+@onready var sfx = $Sfx
 
 
 func _ready() -> void:
 	player.setup(WALL_WIDTH, SCREEN_SIZE.x - WALL_WIDTH)
 	player.hit_spike.connect(_on_player_hit_spike)
 	player.got_coin.connect(_on_player_got_coin)
+	player.jumped.connect(sfx.play.bind("jump"))
+	player.landed.connect(sfx.play.bind("land"))
+	player.peeled.connect(sfx.play.bind("peel"))
 	spawn_timer.timeout.connect(_on_spawn_timer_timeout)
 	_reset_game()
 
@@ -83,6 +91,10 @@ func _physics_process(delta: float) -> void:
 func _update_play(delta: float) -> void:
 	var scroll_dy := base_scroll_speed * delta
 	player.step(delta, scroll_dy)
+	if player.state == Player.State.STUCK:
+		sfx.update_charge(player.stick_ratio())
+	else:
+		sfx.stop_charge()
 
 	# プレイヤーが上に行きすぎたら、その分だけ世界を下へ流して画面内に留める
 	if player.position.y < push_line_y:
@@ -94,10 +106,11 @@ func _update_play(delta: float) -> void:
 		drop.advance(delta, scroll_dy)
 	climbed += scroll_dy
 	_update_summit()
+	_update_town()
 
 	if player.position.y - player.SIZE / 2.0 > SCREEN_SIZE.y:
 		_game_over()
-	elif climbed >= stage_length:
+	elif _touching_summit():
 		_stage_clear()
 
 
@@ -111,6 +124,7 @@ func _reset_game() -> void:
 	spawn_timer.stop()
 	_clear_drops()
 	_update_summit()
+	_update_town()
 	player.reset(player_start_y)
 	hud.set_stage(stage)
 	hud.set_score(score)
@@ -124,10 +138,13 @@ func _start_stage() -> void:
 	climbed = 0.0
 	_clear_drops()
 	_update_summit()
+	_update_town()
 	# 最初の出現だけ start_grace 秒待つ。以降は _on_spawn_timer_timeout で間隔を切り替える
 	spawn_timer.start(start_grace)
 	hud.set_stage(stage)
 	hud.show_message("STAGE %d" % stage, 1.0)
+	if stage == 1:
+		sfx.play("start")
 	print("[main] stage %d start (interval %.2fs)" % [stage, _spawn_interval()])
 
 
@@ -135,6 +152,8 @@ func _stage_clear() -> void:
 	state = GameState.STAGE_CLEAR
 	spawn_timer.stop()
 	_wait = clear_pause
+	sfx.stop_charge()
+	sfx.play("stage_clear")
 	hud.show_message("STAGE %d\nCLEAR!" % stage)
 	print("[main] stage %d clear score=%d" % [stage, score])
 
@@ -143,6 +162,9 @@ func _game_over() -> void:
 	state = GameState.GAME_OVER
 	spawn_timer.stop()
 	_wait = retry_delay
+	player.stop_animation()
+	sfx.stop_charge()
+	sfx.play("game_over")
 	hud.show_message("GAME OVER\nSCORE %d\n\nTAP TO RETRY" % score)
 	print("[main] game over stage=%d score=%d" % [stage, score])
 
@@ -165,10 +187,23 @@ func _clear_drops() -> void:
 		drop.queue_free()
 
 
-## 頂上の帯の位置を、残りの距離から決める。残りが 0 になるとプレイヤーの頭の高さに来る
+## 渡り廊下の位置を、残りの距離から決める。残りが 0 になると push_line_y にいるプレイヤーの頭の高さに来る。
+## その先も世界と一緒に下へ流れてくるので、跳んで触れればクリアになる
 func _update_summit() -> void:
 	var remaining := stage_length - climbed
 	summit.position.y = push_line_y - player.SIZE / 2.0 - remaining - summit.size.y
+
+
+## プレイヤーの頭が渡り廊下の下の端に届いたか
+func _touching_summit() -> bool:
+	return player.position.y - player.SIZE / 2.0 <= summit.position.y + summit.size.y
+
+
+## 町並みを、このステージで登った距離に合わせて画面の下へずらす。見えなくなったら描かない。
+## ステージが始まるたびに元の位置に戻る
+func _update_town() -> void:
+	town.position.y = _town_top + climbed * town_parallax
+	town.visible = town.position.y < SCREEN_SIZE.y
 
 
 func _on_spawn_timer_timeout() -> void:
@@ -182,6 +217,7 @@ func _on_spawn_timer_timeout() -> void:
 
 func _on_player_hit_spike() -> void:
 	if state == GameState.PLAYING:
+		sfx.play("hit")
 		_game_over()
 
 
@@ -189,5 +225,6 @@ func _on_player_got_coin(coin: Area2D) -> void:
 	if state != GameState.PLAYING or coin.is_queued_for_deletion():
 		return
 	score += 1
+	sfx.play("coin")
 	hud.set_score(score)
 	coin.queue_free()
